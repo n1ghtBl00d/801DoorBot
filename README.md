@@ -27,7 +27,7 @@ python bot.py
 
 ### Required Configuration
 - `DISCORD_TOKEN`: Your Discord bot token
-- `UNIFI_HOST`: URL of your Unifi Access controller (including port)
+- `UNIFI_HOST`: Local IP address and port of your Unifi Access controller (e.g., https://192.168.1.100:12445)
 - `UNIFI_TOKEN`: API token for Unifi Access
 
 ### Debugging and Logging
