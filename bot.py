@@ -7,19 +7,46 @@ import json
 import logging
 from urllib.parse import urlparse
 import urllib3
+import warnings
 
 # Suppress SSL warnings
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
+# Load environment variables
+load_dotenv()
+
+# Debug and silent mode configuration
+DEBUG = os.getenv('DEBUG', 'false').lower() in ('true', '1', 't', 'yes')
+SILENT_MODE = os.getenv('SILENT_MODE', 'false').lower() in ('true', '1', 't', 'yes')
+
+# Suppress nextcord warnings in silent mode
+if SILENT_MODE:
+    # Filter out all warnings from nextcord
+    warnings.filterwarnings("ignore", module="nextcord")
+    # Also suppress any other warnings
+    if not DEBUG:
+        warnings.filterwarnings("ignore")
+
 # Configure logging
+if SILENT_MODE:
+    logging_level = logging.CRITICAL + 1  # Above critical to disable all logging
+elif DEBUG:
+    logging_level = logging.DEBUG
+else:
+    logging_level = logging.INFO
+
 logging.basicConfig(
-    level=logging.DEBUG,
+    level=logging_level,
     format='%(asctime)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
 
-# Load environment variables
-load_dotenv()
+# Output startup mode information
+if not SILENT_MODE:
+    if DEBUG:
+        logger.info("Starting in DEBUG mode (verbose logging enabled)")
+    else:
+        logger.info("Starting in normal mode")
 
 # Unifi API configuration
 UNIFI_TOKEN = os.getenv('UNIFI_TOKEN')
@@ -57,9 +84,10 @@ class UnifiAPI:
             "lockdown": False,  # Always keep lockdown disabled
             "evacuation": enabled
         }
-        logger.debug(f"Making PUT request to {url}")
-        logger.debug(f"Headers: {self.session.headers}")
-        logger.debug(f"Payload: {payload}")
+        if DEBUG:
+            logger.debug(f"Making PUT request to {url}")
+            logger.debug(f"Headers: {self.session.headers}")
+            logger.debug(f"Payload: {payload}")
         response = self.session.put(url, json=payload)
         try:
             response.raise_for_status()
@@ -67,15 +95,17 @@ class UnifiAPI:
         except requests.exceptions.HTTPError as e:
             logger.error(f"HTTP Error: {e}")
             logger.error(f"Response status code: {response.status_code}")
-            logger.error(f"Response headers: {response.headers}")
             logger.error(f"Response body: {response.text}")
+            if DEBUG:
+                logger.error(f"Response headers: {response.headers}")
             raise
 
     def get_door_status(self):
         """Get current status of all doors"""
         url = f"{UNIFI_BASE_URL}/developer/doors"
-        logger.debug(f"Making GET request to {url}")
-        logger.debug(f"Headers: {self.session.headers}")
+        if DEBUG:
+            logger.debug(f"Making GET request to {url}")
+            logger.debug(f"Headers: {self.session.headers}")
         response = self.session.get(url)
         try:
             response.raise_for_status()
@@ -83,8 +113,9 @@ class UnifiAPI:
         except requests.exceptions.HTTPError as e:
             logger.error(f"HTTP Error: {e}")
             logger.error(f"Response status code: {response.status_code}")
-            logger.error(f"Response headers: {response.headers}")
             logger.error(f"Response body: {response.text}")
+            if DEBUG:
+                logger.error(f"Response headers: {response.headers}")
             raise
 
 # Initialize Unifi API client
@@ -93,6 +124,8 @@ try:
     logger.info("Unifi API client initialized successfully")
 except Exception as e:
     logger.error(f"Failed to initialize Unifi API client: {str(e)}")
+    if DEBUG:
+        logger.debug(f"Exception details: {repr(e)}")
     unifi = None
 
 @bot.event
@@ -111,11 +144,15 @@ async def unlock(interaction: nextcord.Interaction):
             raise RuntimeError("Unifi API is not properly configured. Please check the bot's console for details.")
             
         await interaction.response.defer()
+        if DEBUG:
+            logger.debug("Processing unlock command")
         result = unifi.set_evacuation_mode(True)
         logger.info("Successfully unlocked all doors")
         await interaction.followup.send("✅ All doors have been unlocked")
     except Exception as e:
         logger.error(f"Error in unlock command: {str(e)}")
+        if DEBUG:
+            logger.debug(f"Exception details: {repr(e)}")
         await interaction.followup.send("❌ Failed to unlock doors. Please check the bot's console for details.")
 
 @bot.slash_command(name="lock", description="Lock all doors by disabling evacuation mode")
@@ -125,11 +162,15 @@ async def lock(interaction: nextcord.Interaction):
             raise RuntimeError("Unifi API is not properly configured. Please check the bot's console for details.")
             
         await interaction.response.defer()
+        if DEBUG:
+            logger.debug("Processing lock command")
         result = unifi.set_evacuation_mode(False)
         logger.info("Successfully locked all doors")
         await interaction.followup.send("✅ All doors have been locked")
     except Exception as e:
         logger.error(f"Error in lock command: {str(e)}")
+        if DEBUG:
+            logger.debug(f"Exception details: {repr(e)}")
         await interaction.followup.send("❌ Failed to lock doors. Please check the bot's console for details.")
 
 @bot.slash_command(name="status", description="Check the current status of all doors")
@@ -139,6 +180,8 @@ async def status(interaction: nextcord.Interaction):
             raise RuntimeError("Unifi API is not properly configured. Please check the bot's console for details.")
             
         await interaction.response.defer()
+        if DEBUG:
+            logger.debug("Processing status command")
         response = unifi.get_door_status()
         
         # Create a formatted message with door statuses
@@ -147,17 +190,23 @@ async def status(interaction: nextcord.Interaction):
         # Check if response is a dictionary with 'data' field
         if isinstance(response, dict) and 'data' in response:
             doors = response['data']
+            if DEBUG:
+                logger.debug(f"Door data received: {doors}")
             for door in doors:
                 door_status = door.get('door_lock_relay_status', 'lock')
                 status = "🔓 Unlocked" if door_status == 'unlock' else "🔒 Locked"
                 status_message += f"- {door.get('name', 'Unknown')}: {status}\n"
         else:
+            if DEBUG:
+                logger.debug(f"Unexpected response format: {response}")
             status_message += str(response)
         
         logger.info("Successfully retrieved door status")
         await interaction.followup.send(status_message)
     except Exception as e:
         logger.error(f"Error in status command: {str(e)}")
+        if DEBUG:
+            logger.debug(f"Exception details: {repr(e)}")
         await interaction.followup.send("❌ Failed to get door status. Please check the bot's console for details.")
 
 # Run the bot
