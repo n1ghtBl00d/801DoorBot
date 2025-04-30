@@ -11,7 +11,7 @@ import warnings
 import datetime
 import pathlib
 
-# Suppress SSL warnings
+# Suppress SSL warnings (unifi console local access is self-signed)
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 # Load environment variables
@@ -29,6 +29,42 @@ NTFY_TOPIC = os.getenv('NTFY_TOPIC', 'door-bot-alerts')
 AUDIT_LOGGING = os.getenv('AUDIT_LOGGING', 'false').lower() in ('true', '1', 't', 'yes')
 AUDIT_LOG_DIR = os.getenv('AUDIT_LOG_DIR', 'logs')
 
+# Suppress nextcord warnings in silent mode
+if SILENT_MODE:
+    # Filter out all warnings from nextcord
+    warnings.filterwarnings("ignore", module="nextcord")
+    # Also suppress any other warnings
+    if not DEBUG:
+        warnings.filterwarnings("ignore")
+
+# Configure logging
+if SILENT_MODE:
+    logging_level = logging.CRITICAL + 1  # Above critical to disable all logging
+elif DEBUG:
+    logging_level = logging.DEBUG
+else:
+    logging_level = logging.INFO
+
+logging.basicConfig(
+    level=logging_level,
+    format='%(asctime)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
+
+# Unifi API configuration
+UNIFI_TOKEN = os.getenv('UNIFI_TOKEN')
+UNIFI_HOST = os.getenv('UNIFI_HOST')
+# Parse the host URL to ensure it's in the correct format
+parsed_url = urlparse(UNIFI_HOST)
+if not parsed_url.netloc:
+    # If no protocol was provided, use the host as is
+    UNIFI_BASE_URL = f"https://{UNIFI_HOST}/api/v1"
+else:
+    # If protocol was provided, use the full URL
+    UNIFI_BASE_URL = f"{UNIFI_HOST}/api/v1"
+
+
+#Audit logging setup
 # Create logs directory if it doesn't exist and audit logging is enabled
 if AUDIT_LOGGING:
     os.makedirs(AUDIT_LOG_DIR, exist_ok=True)
@@ -72,40 +108,6 @@ def log_to_audit(username, command, details=None):
             if DEBUG:
                 logger.debug(f"Error details: {repr(e)}")
 
-# Suppress nextcord warnings in silent mode
-if SILENT_MODE:
-    # Filter out all warnings from nextcord
-    warnings.filterwarnings("ignore", module="nextcord")
-    # Also suppress any other warnings
-    if not DEBUG:
-        warnings.filterwarnings("ignore")
-
-# Configure logging
-if SILENT_MODE:
-    logging_level = logging.CRITICAL + 1  # Above critical to disable all logging
-elif DEBUG:
-    logging_level = logging.DEBUG
-else:
-    logging_level = logging.INFO
-
-logging.basicConfig(
-    level=logging_level,
-    format='%(asctime)s - %(levelname)s - %(message)s'
-)
-logger = logging.getLogger(__name__)
-
-# Output startup mode information
-if not SILENT_MODE:
-    if DEBUG:
-        logger.info("Starting in DEBUG mode (verbose logging enabled)")
-    else:
-        logger.info("Starting in normal mode")
-    
-    if AUDIT_LOGGING:
-        logger.info(f"Audit logging enabled (directory: {AUDIT_LOG_DIR})")
-        
-    if NTFY_URL:
-        logger.info(f"ntfy notifications enabled (topic: {NTFY_TOPIC})")
 
 # Function to send notifications via ntfy.sh
 def send_notification(title, message, priority="default", tags=None):
@@ -151,17 +153,20 @@ def send_notification(title, message, priority="default", tags=None):
             if DEBUG:
                 logger.debug(f"Error details: {repr(e)}")
 
-# Unifi API configuration
-UNIFI_TOKEN = os.getenv('UNIFI_TOKEN')
-UNIFI_HOST = os.getenv('UNIFI_HOST')
-# Parse the host URL to ensure it's in the correct format
-parsed_url = urlparse(UNIFI_HOST)
-if not parsed_url.netloc:
-    # If no protocol was provided, use the host as is
-    UNIFI_BASE_URL = f"https://{UNIFI_HOST}/api/v1"
-else:
-    # If protocol was provided, use the full URL
-    UNIFI_BASE_URL = f"{UNIFI_HOST}/api/v1"
+# Output startup mode information
+if not SILENT_MODE:
+    if DEBUG:
+        logger.info("Starting in DEBUG mode (verbose logging enabled)")
+    else:
+        logger.info("Starting in normal mode")
+    
+    if AUDIT_LOGGING:
+        logger.info(f"Audit logging enabled (directory: {AUDIT_LOG_DIR})")
+        
+    if NTFY_URL:
+        logger.info(f"ntfy notifications enabled (topic: {NTFY_TOPIC})")
+
+
 
 # Discord bot setup
 intents = nextcord.Intents.default()
