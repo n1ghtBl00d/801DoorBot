@@ -1,0 +1,5 @@
+nextcord==2.5.0
+python-dotenv==1.0.0
+requests==2.31.0
+audioop-lts==0.2.1; python_version>='3.13'
+setuptools==69.0.3
