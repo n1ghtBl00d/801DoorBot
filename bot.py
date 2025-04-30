@@ -8,6 +8,8 @@ import logging
 from urllib.parse import urlparse
 import urllib3
 import warnings
+import datetime
+import pathlib
 
 # Suppress SSL warnings
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
@@ -22,6 +24,53 @@ SILENT_MODE = os.getenv('SILENT_MODE', 'false').lower() in ('true', '1', 't', 'y
 # ntfy notification configuration
 NTFY_URL = os.getenv('NTFY_URL', '')  # Empty string means no notifications
 NTFY_TOPIC = os.getenv('NTFY_TOPIC', 'door-bot-alerts')
+
+# Audit logging configuration
+AUDIT_LOGGING = os.getenv('AUDIT_LOGGING', 'false').lower() in ('true', '1', 't', 'yes')
+AUDIT_LOG_DIR = os.getenv('AUDIT_LOG_DIR', 'logs')
+
+# Create logs directory if it doesn't exist and audit logging is enabled
+if AUDIT_LOGGING:
+    os.makedirs(AUDIT_LOG_DIR, exist_ok=True)
+
+# Function to log command usage to audit log
+def log_to_audit(username, command, details=None):
+    """
+    Log command usage to audit log file
+    
+    Args:
+        username (str): The username of the user who ran the command
+        command (str): The command that was run
+        details (str, optional): Additional details about the command execution
+    """
+    if not AUDIT_LOGGING:
+        return  # Skip if audit logging is disabled
+        
+    try:
+        # Create a timestamp
+        timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        
+        # Get today's date for the log filename
+        today = datetime.date.today().strftime("%Y-%m-%d")
+        log_file = pathlib.Path(AUDIT_LOG_DIR) / f"{today}.log"
+        
+        # Format the log entry
+        log_message = f"[{timestamp}] - [{username}] ran [{command}]"
+        if details:
+            log_message += f" - {details}"
+        
+        # Write to log file
+        with open(log_file, "a", encoding="utf-8") as f:
+            f.write(log_message + "\n")
+            
+        if DEBUG:
+            logger.debug(f"Audit log entry written: {log_message}")
+    except Exception as e:
+        # Don't let audit logging failures affect the main application
+        if not SILENT_MODE:
+            logger.error(f"Failed to write to audit log: {str(e)}")
+            if DEBUG:
+                logger.debug(f"Error details: {repr(e)}")
 
 # Suppress nextcord warnings in silent mode
 if SILENT_MODE:
@@ -51,6 +100,12 @@ if not SILENT_MODE:
         logger.info("Starting in DEBUG mode (verbose logging enabled)")
     else:
         logger.info("Starting in normal mode")
+    
+    if AUDIT_LOGGING:
+        logger.info(f"Audit logging enabled (directory: {AUDIT_LOG_DIR})")
+        
+    if NTFY_URL:
+        logger.info(f"ntfy notifications enabled (topic: {NTFY_TOPIC})")
 
 # Function to send notifications via ntfy.sh
 def send_notification(title, message, priority="default", tags=None):
@@ -220,6 +275,10 @@ async def on_ready():
 @bot.slash_command(name="unlock", description="Unlock all doors by enabling evacuation mode")
 async def unlock(interaction: nextcord.Interaction):
     try:
+        # Log command usage to audit log
+        username = interaction.user.display_name
+        log_to_audit(username, "unlock")
+        
         if not unifi:
             error_msg = "Unifi API is not properly configured. Please check the bot's console for details."
             raise RuntimeError(error_msg)
@@ -229,12 +288,21 @@ async def unlock(interaction: nextcord.Interaction):
             logger.debug("Processing unlock command")
         result = unifi.set_evacuation_mode(True)
         logger.info("Successfully unlocked all doors")
+        
+        # Log success to audit log
+        log_to_audit(username, "unlock", "Success - All doors unlocked")
+        
         await interaction.followup.send("✅ All doors have been unlocked")
     except Exception as e:
         error_msg = f"Error in unlock command: {str(e)}"
         logger.error(error_msg)
         if DEBUG:
             logger.debug(f"Exception details: {repr(e)}")
+            
+        # Log failure to audit log
+        username = interaction.user.display_name
+        log_to_audit(username, "unlock", "Failed")
+            
         # Send notification for command errors
         send_notification(
             "Door Unlock Failed", 
@@ -247,6 +315,10 @@ async def unlock(interaction: nextcord.Interaction):
 @bot.slash_command(name="lock", description="Lock all doors by disabling evacuation mode")
 async def lock(interaction: nextcord.Interaction):
     try:
+        # Log command usage to audit log
+        username = interaction.user.display_name
+        log_to_audit(username, "lock")
+        
         if not unifi:
             error_msg = "Unifi API is not properly configured. Please check the bot's console for details."
             raise RuntimeError(error_msg)
@@ -256,12 +328,21 @@ async def lock(interaction: nextcord.Interaction):
             logger.debug("Processing lock command")
         result = unifi.set_evacuation_mode(False)
         logger.info("Successfully locked all doors")
+        
+        # Log success to audit log
+        log_to_audit(username, "lock", "Success - All doors locked")
+        
         await interaction.followup.send("✅ All doors have been locked")
     except Exception as e:
         error_msg = f"Error in lock command: {str(e)}"
         logger.error(error_msg)
         if DEBUG:
             logger.debug(f"Exception details: {repr(e)}")
+            
+        # Log failure to audit log
+        username = interaction.user.display_name
+        log_to_audit(username, "lock", "Failed")
+            
         # Send notification for command errors
         send_notification(
             "Door Lock Failed", 
@@ -274,6 +355,10 @@ async def lock(interaction: nextcord.Interaction):
 @bot.slash_command(name="status", description="Check the current status of all doors")
 async def status(interaction: nextcord.Interaction):
     try:
+        # Log command usage to audit log
+        username = interaction.user.display_name
+        log_to_audit(username, "status")
+        
         if not unifi:
             error_msg = "Unifi API is not properly configured. Please check the bot's console for details."
             raise RuntimeError(error_msg)
@@ -285,6 +370,7 @@ async def status(interaction: nextcord.Interaction):
         
         # Create a formatted message with door statuses
         status_message = "**Door Status:**\n"
+        door_statuses = []
         
         # Check if response is a dictionary with 'data' field
         if isinstance(response, dict) and 'data' in response:
@@ -294,19 +380,31 @@ async def status(interaction: nextcord.Interaction):
             for door in doors:
                 door_status = door.get('door_lock_relay_status', 'lock')
                 status = "🔓 Unlocked" if door_status == 'unlock' else "🔒 Locked"
-                status_message += f"- {door.get('name', 'Unknown')}: {status}\n"
+                door_name = door.get('name', 'Unknown')
+                status_message += f"- {door_name}: {status}\n"
+                door_statuses.append(f"{door_name}: {status}")
         else:
             if DEBUG:
                 logger.debug(f"Unexpected response format: {response}")
             status_message += str(response)
+            door_statuses.append("Unexpected response format")
         
         logger.info("Successfully retrieved door status")
+        
+        # Log success to audit log with door statuses
+        log_to_audit(username, "status", f"Success - {', '.join(door_statuses)}")
+        
         await interaction.followup.send(status_message)
     except Exception as e:
         error_msg = f"Error in status command: {str(e)}"
         logger.error(error_msg)
         if DEBUG:
             logger.debug(f"Exception details: {repr(e)}")
+            
+        # Log failure to audit log
+        username = interaction.user.display_name
+        log_to_audit(username, "status", "Failed")
+            
         # Send notification for command errors
         send_notification(
             "Door Status Check Failed", 
