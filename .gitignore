@@ -16,3 +16,4 @@ __pycache__/
 .idea/
 *.swp
 *.swo 
+.cursorignore
