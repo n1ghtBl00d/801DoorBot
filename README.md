@@ -1,8 +1,8 @@
 # 801DoorBot
 
-A Discord bot that interacts with Unifi Access API to control door locks.
+A Discord bot that interacts with Unifi Access API to control door locks via Slash Commands. Created for [801Labs](https://801labs.org)
 
-## Features
+## Commands
 
 - `/unlock` - Unlocks all doors by enabling evacuation mode
 - `/lock` - Locks all doors by disabling evacuation mode
