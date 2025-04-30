@@ -74,4 +74,8 @@ When enabled, the bot will send push notifications in these scenarios:
    - Descriptive titles
    - Error details
    - Priority levels based on error severity
-   - Relevant tags 
+   - Relevant tags
+
+## License
+
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details. 
