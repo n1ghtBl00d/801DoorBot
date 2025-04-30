@@ -1,0 +1,21 @@
+[Unit]
+Description=801 Door Bot - Discord Bot for Unifi Access Control
+After=network.target
+
+[Service]
+Type=simple
+User=doorbot
+WorkingDirectory=/opt/801DoorBot
+ExecStart=/opt/801DoorBot/venv/bin/python /opt/801DoorBot/bot.py
+Restart=on-failure
+RestartSec=10
+Environment=PYTHONUNBUFFERED=1
+
+# Hardening options
+PrivateTmp=true
+ProtectSystem=full
+NoNewPrivileges=true
+ProtectHome=true
+
+[Install]
+WantedBy=multi-user.target 

@@ -23,6 +23,8 @@ pip install -r requirements.txt
 python bot.py
 ```
 
+For production deployments, you can run the bot as a systemd service on Linux. See [systemd-setup.md](systemd-setup.md) for detailed installation instructions.
+
 ## Configuration Options in `.env`
 
 ### Required Configuration
