@@ -39,6 +39,10 @@ For production deployments, you can run the bot as a systemd service on Linux. S
 ### Command Restrictions
 - `ALLOWED_CHANNEL_IDS`: Comma-separated list of Discord channel IDs where commands are allowed (leave empty to allow all channels)
 
+### Status Channel
+- `STATUS_CHANNEL_ID`: Discord channel ID that will be renamed based on door status
+- `STATUS_CHANNEL_NAME_PREFIX`: Base name for the status channel (will be appended with 🔐 or 🔓)
+
 ### External Error Push Notifications
 - `NTFY_URL`: URL of ntfy.sh server (leave empty to disable notifications)
 - `NTFY_TOPIC`: Topic name for ntfy.sh notifications

@@ -10,6 +10,9 @@ import urllib3
 import warnings
 import datetime
 import pathlib
+import re
+import asyncio
+import time
 
 # Suppress SSL warnings (unifi console local access is self-signed)
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
@@ -20,6 +23,12 @@ load_dotenv()
 # Debug and silent mode configuration
 DEBUG = os.getenv('DEBUG', 'false').lower() in ('true', '1', 't', 'yes')
 SILENT_MODE = os.getenv('SILENT_MODE', 'false').lower() in ('true', '1', 't', 'yes')
+
+# Channel name rate limiting
+# Discord has a limit of 2 channel name changes per 10 minutes (per channel)
+channel_update_history = {}  # Will store timestamps of recent updates
+MAX_UPDATES_PER_PERIOD = 2  # Discord allows 2 updates
+RATE_LIMIT_PERIOD = 60 * 10  # 10 minutes in seconds
 
 # ntfy notification configuration
 NTFY_URL = os.getenv('NTFY_URL', '')  # Empty string means no notifications
@@ -32,6 +41,13 @@ AUDIT_LOG_DIR = os.getenv('AUDIT_LOG_DIR', 'logs')
 # Channel restriction configuration
 ALLOWED_CHANNEL_IDS = os.getenv('ALLOWED_CHANNEL_IDS', '').strip()
 ALLOWED_CHANNELS = [int(channel_id.strip()) for channel_id in ALLOWED_CHANNEL_IDS.split(',') if channel_id.strip()] if ALLOWED_CHANNEL_IDS else []
+
+# Status channel configuration
+STATUS_CHANNEL_ID = os.getenv('STATUS_CHANNEL_ID', '').strip()
+STATUS_CHANNEL_ID = int(STATUS_CHANNEL_ID) if STATUS_CHANNEL_ID.isdigit() else None
+STATUS_CHANNEL_NAME_PREFIX = os.getenv('STATUS_CHANNEL_NAME_PREFIX', 'doors').strip()
+LOCKED_EMOJI = "🔐"
+UNLOCKED_EMOJI = "🔓"
 
 # Suppress nextcord warnings in silent mode
 if SILENT_MODE:
@@ -72,6 +88,9 @@ else:
 # Create logs directory if it doesn't exist and audit logging is enabled
 if AUDIT_LOGGING:
     os.makedirs(AUDIT_LOG_DIR, exist_ok=True)
+
+# Global dictionary to track pending update tasks
+pending_channel_updates = {}
 
 # Function to check if a channel is allowed
 def is_channel_allowed(channel_id):
@@ -129,6 +148,208 @@ def log_to_audit(username, command, details=None):
             if DEBUG:
                 logger.debug(f"Error details: {repr(e)}")
 
+# Function to schedule a delayed channel name update
+async def schedule_delayed_update(guild, is_unlocked, delay_seconds):
+    """
+    Schedule a delayed channel name update to occur after rate limit cooldown
+    
+    Args:
+        guild: The Discord guild object
+        is_unlocked (bool): Whether doors are unlocked
+        delay_seconds (int): Delay in seconds before trying update
+    """
+    channel_key = f"{guild.id}-{STATUS_CHANNEL_ID}"
+    
+    # If there's already a pending task, keep it and don't create a new one
+    if channel_key in pending_channel_updates and not pending_channel_updates[channel_key].done():
+        logger.debug(f"Task already pending for channel {STATUS_CHANNEL_ID}, keeping existing schedule")
+        return
+    
+    # Add extra buffer to ensure we're past the rate limit
+    delay_with_buffer = delay_seconds + 10
+    
+    logger.info(f"Scheduling channel name update for {delay_with_buffer} seconds from now")
+    
+    # Define the delayed task
+    async def delayed_update_task():
+        try:
+            logger.debug(f"Waiting {delay_with_buffer} seconds before updating channel name")
+            await asyncio.sleep(delay_with_buffer)
+            logger.info(f"Executing delayed channel name update")
+            await update_status_channel(guild, is_unlocked, force_check=True)
+        except asyncio.CancelledError:
+            logger.debug("Delayed channel update was cancelled")
+        except Exception as e:
+            logger.error(f"Error in delayed channel update: {str(e)}")
+            if DEBUG:
+                logger.debug(f"Error details: {repr(e)}")
+        finally:
+            # Remove the task from tracking once it's complete
+            if channel_key in pending_channel_updates and pending_channel_updates[channel_key].done():
+                del pending_channel_updates[channel_key]
+    
+    # Create and store the task
+    task = asyncio.create_task(delayed_update_task())
+    pending_channel_updates[channel_key] = task
+
+# Function to update status channel name based on door status
+async def update_status_channel(guild, is_unlocked=False, force_check=False):
+    """
+    Update the status channel name based on door status
+    
+    Args:
+        guild: The Discord guild object
+        is_unlocked (bool): Whether doors are unlocked
+        force_check (bool): Whether to force a status check from API instead of using provided status
+    """
+    if not STATUS_CHANNEL_ID:
+        if DEBUG:
+            logger.debug("Status channel updates disabled (STATUS_CHANNEL_ID not set)")
+        return
+    
+    # If force_check is True, get the current door status from the API
+    if force_check and unifi:
+        try:
+            logger.debug("Forcing check of current door status from API")
+            response = unifi.get_door_status()
+            doors_unlocked = False
+            
+            if isinstance(response, dict) and 'data' in response:
+                doors = response['data']
+                # Check if any door is unlocked
+                for door in doors:
+                    if door.get('door_lock_relay_status', 'lock') == 'unlock':
+                        doors_unlocked = True
+                        break
+            
+            # Update the is_unlocked parameter with fresh data
+            is_unlocked = doors_unlocked
+            logger.debug(f"Updated door status: doors are {'unlocked' if is_unlocked else 'locked'}")
+        except Exception as e:
+            logger.error(f"Failed to check door status for delayed update: {str(e)}")
+            if DEBUG:
+                logger.debug(f"Error details: {repr(e)}")
+    
+    # Get current time for rate limiting
+    current_time = datetime.datetime.now().timestamp()
+    channel_key = None
+    
+    try:
+        # Get the channel
+        channel = guild.get_channel(STATUS_CHANNEL_ID)
+        if not channel:
+            logger.warning(f"Status channel with ID {STATUS_CHANNEL_ID} not found")
+            return
+            
+        # Create channel key for rate limiting
+        channel_key = f"{guild.id}-{channel.id}"
+            
+        # Determine the emoji to use
+        emoji = UNLOCKED_EMOJI if is_unlocked else LOCKED_EMOJI
+        
+        # Strip any existing emojis from the channel name
+        # This regex removes any emoji characters at the end of the name
+        base_name = re.sub(r'[-\s]*[\U00010000-\U0010ffff]$', '', STATUS_CHANNEL_NAME_PREFIX)
+        
+        # Create the new name
+        new_name = f"{base_name}-{emoji}"
+        
+        # Check if the name is already correct
+        if channel.name == new_name:
+            if DEBUG:
+                logger.debug(f"Channel name is already {new_name}, skipping update")
+            return
+        
+        # Check rate limit - allow 2 changes per 10 minutes
+        if channel_key in channel_update_history:
+            # Get list of recent updates and filter out old ones
+            recent_updates = [timestamp for timestamp in channel_update_history[channel_key] 
+                             if current_time - timestamp < RATE_LIMIT_PERIOD]
+            
+            # If we already have made MAX_UPDATES_PER_PERIOD changes, don't allow more
+            if len(recent_updates) >= MAX_UPDATES_PER_PERIOD:
+                # Calculate when the oldest update will expire
+                oldest_update = min(recent_updates)
+                time_until_available = int(RATE_LIMIT_PERIOD - (current_time - oldest_update))
+                logger.warning(f"Skipping immediate channel name update due to rate limiting. Reached limit of {MAX_UPDATES_PER_PERIOD} updates per {RATE_LIMIT_PERIOD/60} minutes.")
+                
+                # Schedule a delayed update
+                await schedule_delayed_update(guild, is_unlocked, time_until_available)
+                return
+                
+            # Update the list with only recent updates
+            channel_update_history[channel_key] = recent_updates
+        else:
+            # First update for this channel
+            channel_update_history[channel_key] = []
+            
+        # Update the channel name
+        if DEBUG:
+            logger.debug(f"Updating channel name from '{channel.name}' to '{new_name}'")
+            
+        await channel.edit(name=new_name)
+        
+        # Add this update to the history
+        if channel_key in channel_update_history:
+            channel_update_history[channel_key].append(current_time)
+        else:
+            channel_update_history[channel_key] = [current_time]
+            
+        logger.info(f"Updated status channel name to {new_name}")
+        
+    except nextcord.errors.Forbidden as e:
+        logger.error(f"Failed to update status channel: Missing permissions. Make sure the bot has 'Manage Channels' permission")
+        if DEBUG:
+            logger.debug(f"Error details: {repr(e)}")
+    except nextcord.errors.HTTPException as e:
+        if e.status == 429:  # Rate limit error
+            logger.warning(f"Rate limit hit when updating channel name. Discord limits channel name changes to {MAX_UPDATES_PER_PERIOD} per {RATE_LIMIT_PERIOD/60} minutes")
+            # Track this failed attempt too to avoid hitting rate limits again
+            if channel_key:
+                if channel_key in channel_update_history:
+                    channel_update_history[channel_key].append(current_time)
+                else:
+                    channel_update_history[channel_key] = [current_time]
+                
+                # Calculate when we can try again
+                recent_updates = channel_update_history[channel_key]
+                if len(recent_updates) > 0:
+                    oldest_update = min(recent_updates)
+                    time_until_available = int(RATE_LIMIT_PERIOD - (current_time - oldest_update))
+                    
+                    # Schedule a delayed update
+                    await schedule_delayed_update(guild, is_unlocked, time_until_available)
+        else:
+            logger.error(f"HTTP error when updating status channel: {str(e)}")
+        if DEBUG:
+            logger.debug(f"Error details: {repr(e)}")
+    except Exception as e:
+        logger.error(f"Failed to update status channel: {str(e)}")
+        if DEBUG:
+            logger.debug(f"Error details: {repr(e)}")
+
+# Output startup mode information
+if not SILENT_MODE:
+    if DEBUG:
+        logger.info("Starting in DEBUG mode (verbose logging enabled)")
+    else:
+        logger.info("Starting in normal mode")
+    
+    if AUDIT_LOGGING:
+        logger.info(f"Audit logging enabled (directory: {AUDIT_LOG_DIR})")
+        
+    if NTFY_URL:
+        logger.info(f"ntfy notifications enabled (topic: {NTFY_TOPIC})")
+        
+    if ALLOWED_CHANNELS:
+        logger.info(f"Channel restrictions enabled. Allowed channels: {ALLOWED_CHANNELS}")
+    else:
+        logger.info("No channel restrictions. Commands can be used in any channel.")
+        
+    if STATUS_CHANNEL_ID:
+        logger.info(f"Status channel updates enabled. Channel ID: {STATUS_CHANNEL_ID}")
+    else:
+        logger.info("Status channel updates disabled (STATUS_CHANNEL_ID not set)")
 
 # Function to send notifications via ntfy.sh
 def send_notification(title, message, priority="default", tags=None):
@@ -173,26 +394,6 @@ def send_notification(title, message, priority="default", tags=None):
             logger.error(f"Failed to send notification: {str(e)}")
             if DEBUG:
                 logger.debug(f"Error details: {repr(e)}")
-
-# Output startup mode information
-if not SILENT_MODE:
-    if DEBUG:
-        logger.info("Starting in DEBUG mode (verbose logging enabled)")
-    else:
-        logger.info("Starting in normal mode")
-    
-    if AUDIT_LOGGING:
-        logger.info(f"Audit logging enabled (directory: {AUDIT_LOG_DIR})")
-        
-    if NTFY_URL:
-        logger.info(f"ntfy notifications enabled (topic: {NTFY_TOPIC})")
-        
-    if ALLOWED_CHANNELS:
-        logger.info(f"Channel restrictions enabled. Allowed channels: {ALLOWED_CHANNELS}")
-    else:
-        logger.info("No channel restrictions. Commands can be used in any channel.")
-
-
 
 # Discord bot setup
 intents = nextcord.Intents.default()
@@ -292,6 +493,35 @@ async def on_ready():
     try:
         await bot.sync_application_commands()
         logger.info("Synced slash commands")
+        
+        # Check door status and update channel name on startup
+        if STATUS_CHANNEL_ID and unifi:
+            try:
+                response = unifi.get_door_status()
+                doors_unlocked = False
+                
+                if isinstance(response, dict) and 'data' in response:
+                    doors = response['data']
+                    # Check if any door is unlocked
+                    for door in doors:
+                        if door.get('door_lock_relay_status', 'lock') == 'unlock':
+                            doors_unlocked = True
+                            break
+                            
+                # Log initial status
+                logger.info(f"Initial door status check completed. Doors are {'unlocked' if doors_unlocked else 'locked'}")
+                
+                # Update all guild channels (bot might be in multiple servers)
+                for guild in bot.guilds:
+                    # Wait a moment between updates to avoid rate limits when in multiple guilds
+                    await update_status_channel(guild, doors_unlocked)
+                    await asyncio.sleep(1)  # Small sleep to avoid bunching requests
+                    
+            except Exception as e:
+                logger.error(f"Failed to update status channel on startup: {str(e)}")
+                if DEBUG:
+                    logger.debug(f"Exception details: {repr(e)}")
+        
     except Exception as e:
         error_msg = f"Failed to sync commands: {e}"
         logger.error(error_msg)
@@ -341,7 +571,14 @@ async def unlock(interaction: nextcord.Interaction):
         # Log success to audit log
         log_to_audit(username, "unlock", "Success - All doors unlocked")
         
+        # Send response to Discord - do this before channel updates which might fail
         await interaction.followup.send("✅ All doors have been unlocked")
+        
+        # Update status channel name for all guilds (moved to end with better error handling)
+        if STATUS_CHANNEL_ID:
+            for guild in bot.guilds:
+                await update_status_channel(guild, is_unlocked=True)
+                
     except Exception as e:
         error_msg = f"Error in unlock command: {str(e)}"
         logger.error(error_msg)
@@ -404,7 +641,14 @@ async def lock(interaction: nextcord.Interaction):
         # Log success to audit log
         log_to_audit(username, "lock", "Success - All doors locked")
         
+        # Send response to Discord - do this before channel updates which might fail
         await interaction.followup.send("✅ All doors have been locked")
+        
+        # Update status channel name for all guilds (moved to end with better error handling)
+        if STATUS_CHANNEL_ID:
+            for guild in bot.guilds:
+                await update_status_channel(guild, is_unlocked=False)
+                
     except Exception as e:
         error_msg = f"Error in lock command: {str(e)}"
         logger.error(error_msg)
@@ -466,6 +710,7 @@ async def status(interaction: nextcord.Interaction):
         # Create a formatted message with door statuses
         status_message = "**Door Status:**\n"
         door_statuses = []
+        doors_unlocked = False
         
         # Check if response is a dictionary with 'data' field
         if isinstance(response, dict) and 'data' in response:
@@ -478,6 +723,10 @@ async def status(interaction: nextcord.Interaction):
                 door_name = door.get('name', 'Unknown')
                 status_message += f"- {door_name}: {status}\n"
                 door_statuses.append(f"{door_name}: {status}")
+                
+                # Check if any door is unlocked
+                if door_status == 'unlock':
+                    doors_unlocked = True
         else:
             if DEBUG:
                 logger.debug(f"Unexpected response format: {response}")
@@ -489,7 +738,14 @@ async def status(interaction: nextcord.Interaction):
         # Log success to audit log with door statuses
         log_to_audit(username, "status", f"Success - {', '.join(door_statuses)}")
         
+        # Send response to Discord first - do this before channel updates
         await interaction.followup.send(status_message)
+        
+        # Update status channel name for all guilds (moved to end with better error handling)
+        if STATUS_CHANNEL_ID:
+            for guild in bot.guilds:
+                await update_status_channel(guild, is_unlocked=doors_unlocked)
+                
     except Exception as e:
         error_msg = f"Error in status command: {str(e)}"
         logger.error(error_msg)

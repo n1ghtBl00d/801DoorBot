@@ -21,15 +21,15 @@ sudo useradd -r -s /bin/false doorbot
 ### 2. Copy your project to a suitable location
 
 ```bash
-sudo mkdir -p /opt/801doorbot
-sudo cp -r * /opt/801doorbot/
-sudo chown -R doorbot:doorbot /opt/801doorbot
+sudo mkdir -p /opt/801DoorBot
+sudo cp -r * /opt/801DoorBot/
+sudo chown -R doorbot:doorbot /opt/801DoorBot
 ```
 
 ### 3. Set up a virtual environment
 
 ```bash
-cd /opt/801doorbot
+cd /opt/801DoorBot
 sudo -u doorbot python -m venv venv
 sudo -u doorbot venv/bin/pip install -r requirements.txt
 ```
@@ -38,7 +38,7 @@ sudo -u doorbot venv/bin/pip install -r requirements.txt
 
 ```bash
 sudo -u doorbot cp .env.example .env
-sudo nano /opt/801doorbot/.env  # Edit with your configuration
+sudo nano /opt/801DoorBot/.env  # Edit with your configuration
 ```
 
 For headless server deployment, you may want to enable silent mode and audit logging:
@@ -51,22 +51,22 @@ AUDIT_LOGGING=true
 ### 5. Install the systemd service
 
 ```bash
-sudo cp 801doorbot.service /etc/systemd/system/
+sudo cp 801DoorBot.service /etc/systemd/system/
 sudo systemctl daemon-reload
-sudo systemctl enable 801doorbot.service
-sudo systemctl start 801doorbot.service
+sudo systemctl enable 801DoorBot.service
+sudo systemctl start 801DoorBot.service
 ```
 
 ### 6. Check service status
 
 ```bash
-sudo systemctl status 801doorbot.service
+sudo systemctl status 801DoorBot.service
 ```
 
 ### 7. View logs
 
 ```bash
-sudo journalctl -u 801doorbot.service -f
+sudo journalctl -u 801DoorBot.service -f
 ```
 
 ## Troubleshooting
@@ -76,7 +76,7 @@ sudo journalctl -u 801doorbot.service -f
 Check the logs for detailed error messages:
 
 ```bash
-sudo journalctl -u 801doorbot.service -e
+sudo journalctl -u 801DoorBot.service -e
 ```
 
 Common issues include:
@@ -93,9 +93,9 @@ If the bot keeps crashing and restarting:
 
 ## Service Management Commands
 
-- **Start the service**: `sudo systemctl start 801doorbot.service`
-- **Stop the service**: `sudo systemctl stop 801doorbot.service`
-- **Restart the service**: `sudo systemctl restart 801doorbot.service`
-- **Check status**: `sudo systemctl status 801doorbot.service`
-- **Enable at boot**: `sudo systemctl enable 801doorbot.service`
-- **Disable at boot**: `sudo systemctl disable 801doorbot.service` 
+- **Start the service**: `sudo systemctl start 801DoorBot.service`
+- **Stop the service**: `sudo systemctl stop 801DoorBot.service`
+- **Restart the service**: `sudo systemctl restart 801DoorBot.service`
+- **Check status**: `sudo systemctl status 801DoorBot.service`
+- **Enable at boot**: `sudo systemctl enable 801DoorBot.service`
+- **Disable at boot**: `sudo systemctl disable 801DoorBot.service` 
