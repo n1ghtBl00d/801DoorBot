@@ -29,6 +29,10 @@ NTFY_TOPIC = os.getenv('NTFY_TOPIC', 'door-bot-alerts')
 AUDIT_LOGGING = os.getenv('AUDIT_LOGGING', 'false').lower() in ('true', '1', 't', 'yes')
 AUDIT_LOG_DIR = os.getenv('AUDIT_LOG_DIR', 'logs')
 
+# Channel restriction configuration
+ALLOWED_CHANNEL_IDS = os.getenv('ALLOWED_CHANNEL_IDS', '').strip()
+ALLOWED_CHANNELS = [int(channel_id.strip()) for channel_id in ALLOWED_CHANNEL_IDS.split(',') if channel_id.strip()] if ALLOWED_CHANNEL_IDS else []
+
 # Suppress nextcord warnings in silent mode
 if SILENT_MODE:
     # Filter out all warnings from nextcord
@@ -68,6 +72,23 @@ else:
 # Create logs directory if it doesn't exist and audit logging is enabled
 if AUDIT_LOGGING:
     os.makedirs(AUDIT_LOG_DIR, exist_ok=True)
+
+# Function to check if a channel is allowed
+def is_channel_allowed(channel_id):
+    """
+    Check if the channel is allowed to execute commands
+    
+    Args:
+        channel_id: The channel ID to check
+        
+    Returns:
+        bool: True if the channel is allowed, False otherwise
+    """
+    # If no channels are specified, all channels are allowed
+    if not ALLOWED_CHANNELS:
+        return True
+    
+    return channel_id in ALLOWED_CHANNELS
 
 # Function to log command usage to audit log
 def log_to_audit(username, command, details=None):
@@ -165,6 +186,11 @@ if not SILENT_MODE:
         
     if NTFY_URL:
         logger.info(f"ntfy notifications enabled (topic: {NTFY_TOPIC})")
+        
+    if ALLOWED_CHANNELS:
+        logger.info(f"Channel restrictions enabled. Allowed channels: {ALLOWED_CHANNELS}")
+    else:
+        logger.info("No channel restrictions. Commands can be used in any channel.")
 
 
 
@@ -280,8 +306,26 @@ async def on_ready():
 @bot.slash_command(name="unlock", description="Unlock all doors by enabling evacuation mode")
 async def unlock(interaction: nextcord.Interaction):
     try:
-        # Log command usage to audit log
+        # Get username for logging before any checks
         username = interaction.user.display_name
+        
+        # Validate that this is not a DM
+        if not interaction.guild:
+            await interaction.response.send_message("❌ This command cannot be used in DMs.", ephemeral=True)
+            logger.warning(f"User {username} attempted to use unlock command in DM")
+            # Log the rejected DM attempt to audit log
+            log_to_audit(username, "unlock", "Rejected - Command used in DM")
+            return
+            
+        # Validate the channel
+        if not is_channel_allowed(interaction.channel.id):
+            await interaction.response.send_message("❌ This command can only be used in designated channels.", ephemeral=True)
+            logger.warning(f"User {username} attempted to use unlock command in unauthorized channel {interaction.channel.name} ({interaction.channel.id})")
+            # Log the rejected channel attempt to audit log
+            log_to_audit(username, "unlock", f"Rejected - Unauthorized channel: {interaction.channel.name}")
+            return
+        
+        # Log command usage to audit log
         log_to_audit(username, "unlock")
         
         if not unifi:
@@ -315,13 +359,36 @@ async def unlock(interaction: nextcord.Interaction):
             priority="high",
             tags=["warning", "unlock-error"]
         )
-        await interaction.followup.send("❌ Failed to unlock doors. Please check the bot's console for details.")
+        
+        # Only send error response if we haven't already responded with a validation error
+        if interaction.response.is_done():
+            await interaction.followup.send("❌ Failed to unlock doors. Please check the bot's console for details.")
+        else:
+            await interaction.response.send_message("❌ Failed to unlock doors. Please check the bot's console for details.")
 
 @bot.slash_command(name="lock", description="Lock all doors by disabling evacuation mode")
 async def lock(interaction: nextcord.Interaction):
     try:
-        # Log command usage to audit log
+        # Get username for logging before any checks
         username = interaction.user.display_name
+        
+        # Validate that this is not a DM
+        if not interaction.guild:
+            await interaction.response.send_message("❌ This command cannot be used in DMs.", ephemeral=True)
+            logger.warning(f"User {username} attempted to use lock command in DM")
+            # Log the rejected DM attempt to audit log
+            log_to_audit(username, "lock", "Rejected - Command used in DM")
+            return
+            
+        # Validate the channel
+        if not is_channel_allowed(interaction.channel.id):
+            await interaction.response.send_message("❌ This command can only be used in designated channels.", ephemeral=True)
+            logger.warning(f"User {username} attempted to use lock command in unauthorized channel {interaction.channel.name} ({interaction.channel.id})")
+            # Log the rejected channel attempt to audit log
+            log_to_audit(username, "lock", f"Rejected - Unauthorized channel: {interaction.channel.name}")
+            return
+        
+        # Log command usage to audit log
         log_to_audit(username, "lock")
         
         if not unifi:
@@ -355,13 +422,36 @@ async def lock(interaction: nextcord.Interaction):
             priority="high",
             tags=["warning", "lock-error"]
         )
-        await interaction.followup.send("❌ Failed to lock doors. Please check the bot's console for details.")
+        
+        # Only send error response if we haven't already responded with a validation error
+        if interaction.response.is_done():
+            await interaction.followup.send("❌ Failed to lock doors. Please check the bot's console for details.")
+        else:
+            await interaction.response.send_message("❌ Failed to lock doors. Please check the bot's console for details.")
 
 @bot.slash_command(name="status", description="Check the current status of all doors")
 async def status(interaction: nextcord.Interaction):
     try:
-        # Log command usage to audit log
+        # Get username for logging before any checks
         username = interaction.user.display_name
+        
+        # Validate that this is not a DM
+        if not interaction.guild:
+            await interaction.response.send_message("❌ This command cannot be used in DMs.", ephemeral=True)
+            logger.warning(f"User {username} attempted to use status command in DM")
+            # Log the rejected DM attempt to audit log
+            log_to_audit(username, "status", "Rejected - Command used in DM")
+            return
+            
+        # Validate the channel
+        if not is_channel_allowed(interaction.channel.id):
+            await interaction.response.send_message("❌ This command can only be used in designated channels.", ephemeral=True)
+            logger.warning(f"User {username} attempted to use status command in unauthorized channel {interaction.channel.name} ({interaction.channel.id})")
+            # Log the rejected channel attempt to audit log
+            log_to_audit(username, "status", f"Rejected - Unauthorized channel: {interaction.channel.name}")
+            return
+        
+        # Log command usage to audit log
         log_to_audit(username, "status")
         
         if not unifi:
@@ -417,7 +507,12 @@ async def status(interaction: nextcord.Interaction):
             priority="high",
             tags=["warning", "status-error"]
         )
-        await interaction.followup.send("❌ Failed to get door status. Please check the bot's console for details.")
+        
+        # Only send error response if we haven't already responded with a validation error
+        if interaction.response.is_done():
+            await interaction.followup.send("❌ Failed to get door status. Please check the bot's console for details.")
+        else:
+            await interaction.response.send_message("❌ Failed to get door status. Please check the bot's console for details.")
 
 # Run the bot
 bot.run(os.getenv('DISCORD_TOKEN')) 

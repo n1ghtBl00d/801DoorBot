@@ -36,6 +36,9 @@ For production deployments, you can run the bot as a systemd service on Linux. S
 - `DEBUG`: Set to `true` to enable verbose logging
 - `SILENT_MODE`: Set to `true` to disable all console output (useful for headless deployment)
 
+### Command Restrictions
+- `ALLOWED_CHANNEL_IDS`: Comma-separated list of Discord channel IDs where commands are allowed (leave empty to allow all channels)
+
 ### External Error Push Notifications
 - `NTFY_URL`: URL of ntfy.sh server (leave empty to disable notifications)
 - `NTFY_TOPIC`: Topic name for ntfy.sh notifications
