@@ -533,7 +533,7 @@ async def on_ready():
             tags=["warning", "discord-error"]
         )
 
-@bot.slash_command(name="unlock", description="Unlock all doors by enabling evacuation mode")
+@bot.slash_command(name="unlock", description="Unlock all doors")
 async def unlock(interaction: nextcord.Interaction):
     try:
         # Get username for logging before any checks
@@ -603,7 +603,7 @@ async def unlock(interaction: nextcord.Interaction):
         else:
             await interaction.response.send_message("❌ Failed to unlock doors. Please check the bot's console for details.")
 
-@bot.slash_command(name="lock", description="Lock all doors by disabling evacuation mode")
+@bot.slash_command(name="lock", description="Lock all doors")
 async def lock(interaction: nextcord.Interaction):
     try:
         # Get username for logging before any checks
