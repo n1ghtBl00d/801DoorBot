@@ -13,12 +13,22 @@ import pathlib
 import re
 import asyncio
 import time
+import dateutil.parser
+import dateutil.relativedelta
+import pytz
 
 # Suppress SSL warnings (unifi console local access is self-signed)
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 # Load environment variables
 load_dotenv()
+
+# Global variables for door lock timing
+next_lock_time = None
+lock_task = None
+
+# Timezone configuration
+TIMEZONE = os.getenv('TIMEZONE', 'America/Denver')
 
 # Debug and silent mode configuration
 DEBUG = os.getenv('DEBUG', 'false').lower() in ('true', '1', 't', 'yes')
@@ -533,8 +543,8 @@ async def on_ready():
             tags=["warning", "discord-error"]
         )
 
-@bot.slash_command(name="unlock", description="Unlock all doors")
-async def unlock(interaction: nextcord.Interaction):
+@bot.slash_command(name="unlock", description="Unlock all doors (with optional auto-lock timer)")
+async def unlock(interaction: nextcord.Interaction, unlock_after: str = nextcord.SlashOption(description="Optional: Time to auto-lock (e.g. '1:30pm', '2h', '30m')", required=False)):
     try:
         # Get username for logging before any checks
         username = interaction.user.display_name
@@ -565,14 +575,37 @@ async def unlock(interaction: nextcord.Interaction):
         await interaction.response.defer()
         if DEBUG:
             logger.debug("Processing unlock command")
+            
+        # Parse time input if provided
+        lock_time = None
+        if unlock_after:
+            lock_time, error = parse_time_input(unlock_after)
+            if error:
+                await interaction.followup.send(f"⚠️ {error}\nProceeding with unlock without timer.")
+                logger.warning(f"Time input parse error: {error}")
+        
+        # Unlock the doors
         result = unifi.set_evacuation_mode(True)
         logger.info("Successfully unlocked all doors")
         
+        # Schedule automatic lock if time was provided
+        if lock_time:
+            await schedule_lock_time(lock_time)
+            logger.info(f"Scheduled automatic lock for {lock_time.strftime('%I:%M %p')}")
+        
         # Log success to audit log
-        log_to_audit(username, "unlock", "Success - All doors unlocked")
+        log_details = "Success - All doors unlocked"
+        if lock_time:
+            log_details += f" (Auto-lock at {lock_time.strftime('%I:%M %p')})"
+        log_to_audit(username, "unlock", log_details)
+        
+        # Prepare response message
+        response_message = "✅ All doors have been unlocked"
+        if lock_time:
+            response_message += f"\nThe doors will automatically lock at {lock_time.strftime('%I:%M %p')}"
         
         # Send response to Discord - do this before channel updates which might fail
-        await interaction.followup.send("✅ All doors have been unlocked")
+        await interaction.followup.send(response_message)
         
         # Update status channel name for all guilds (moved to end with better error handling)
         if STATUS_CHANNEL_ID:
@@ -732,11 +765,18 @@ async def status(interaction: nextcord.Interaction):
                 logger.debug(f"Unexpected response format: {response}")
             status_message += str(response)
             door_statuses.append("Unexpected response format")
+            
+        # Add next lock time if scheduled
+        if next_lock_time:
+            status_message += f"\n**Next Auto-Lock:** {next_lock_time.strftime('%I:%M %p')}"
         
         logger.info("Successfully retrieved door status")
         
         # Log success to audit log with door statuses
-        log_to_audit(username, "status", f"Success - {', '.join(door_statuses)}")
+        log_details = f"Success - {', '.join(door_statuses)}"
+        if next_lock_time:
+            log_details += f" (Next auto-lock at {next_lock_time.strftime('%I:%M %p')})"
+        log_to_audit(username, "status", log_details)
         
         # Send response to Discord first - do this before channel updates
         await interaction.followup.send(status_message)
@@ -769,6 +809,210 @@ async def status(interaction: nextcord.Interaction):
             await interaction.followup.send("❌ Failed to get door status. Please check the bot's console for details.")
         else:
             await interaction.response.send_message("❌ Failed to get door status. Please check the bot's console for details.")
+
+def get_current_time():
+    """Get current time in configured timezone"""
+    try:
+        return datetime.datetime.now(pytz.timezone(TIMEZONE))
+    except pytz.exceptions.UnknownTimeZoneError:
+        logger.error(f"Invalid timezone '{TIMEZONE}' specified in .env file. Falling back to America/Denver")
+        return datetime.datetime.now(pytz.timezone('America/Denver'))
+
+def parse_time_input(input_str):
+    """
+    Parse time input string into a datetime object.
+    Returns (datetime, error_message) tuple. If error, datetime will be None.
+    """
+    try:
+        # Check if input contains hours and/or minutes
+        hours = 0
+        minutes = 0
+        
+        # Extract hours
+        h_match = re.search(r'(\d+)h', input_str.lower())
+        if h_match:
+            hours = int(h_match.group(1))
+            
+        # Extract minutes
+        m_match = re.search(r'(\d+)m', input_str.lower())
+        if m_match:
+            minutes = int(m_match.group(1))
+            
+        if hours == 0 and minutes == 0:
+            # Try to parse as a time of day
+            try:
+                # Get current time
+                now = get_current_time()
+                now_naive = now.replace(tzinfo=None)
+                
+                # Try to parse the time string
+                try:
+                    # First try parsing with AM/PM if provided
+                    if any(x in input_str.lower() for x in ['am', 'pm']):
+                        parsed_time = dateutil.parser.parse(input_str, fuzzy=True)
+                        parsed_time = parsed_time.replace(tzinfo=None)
+                        if parsed_time < now_naive:
+                            parsed_time = parsed_time + datetime.timedelta(days=1)
+                    else:
+                        # If no AM/PM, determine whether AM or PM is next
+                        time_parts = input_str.split(':')
+                        if len(time_parts) != 2:
+                            return None, "Invalid time format. Please use format like '1:30', '2h', or '30m'"
+                            
+                        hour = int(time_parts[0])
+                        minute = int(time_parts[1])
+                        
+                        if hour < 0 or hour > 23 or minute < 0 or minute > 59:
+                            return None, "Invalid time. Hours must be 0-23 and minutes must be 0-59"
+                        
+                        # Convert 24-hour format to 12-hour if needed
+                        hour_12 = hour
+                        if hour_12 > 12:
+                            hour_12 = hour_12 - 12
+                        elif hour_12 == 0:
+                            hour_12 = 12
+                            
+                        # Create both AM and PM versions of the time
+                        am_time = now_naive.replace(hour=hour_12, minute=minute, second=0, microsecond=0)
+                        pm_time = now_naive.replace(hour=hour_12 + 12, minute=minute, second=0, microsecond=0)
+                        if hour_12 == 12:  # Special case for 12 PM/AM
+                            am_time = now_naive.replace(hour=0, minute=minute, second=0, microsecond=0)
+                            pm_time = now_naive.replace(hour=12, minute=minute, second=0, microsecond=0)
+                            
+                        # Add a day if both times are in the past
+                        if am_time < now_naive:
+                            am_time += datetime.timedelta(days=1)
+                        if pm_time < now_naive:
+                            pm_time += datetime.timedelta(days=1)
+                            
+                        # Choose whichever time comes next
+                        if am_time < pm_time:
+                            parsed_time = am_time
+                        else:
+                            parsed_time = pm_time
+                except ValueError:
+                    return None, "Invalid time format. Please use format like '1:30', '2h', or '30m'"
+                
+                # Make the time timezone-aware
+                try:
+                    parsed_time = pytz.timezone(TIMEZONE).localize(parsed_time)
+                except pytz.exceptions.UnknownTimeZoneError:
+                    logger.error(f"Invalid timezone '{TIMEZONE}' specified in .env file. Falling back to America/Denver")
+                    parsed_time = pytz.timezone('America/Denver').localize(parsed_time)
+                
+                # Ensure the time is at least 2 minutes in the future
+                if (parsed_time - now).total_seconds() < 120:
+                    parsed_time = now + datetime.timedelta(minutes=2)
+                    logger.info(f"Adjusted lock time to be at least 2 minutes in the future: {parsed_time.strftime('%I:%M %p %Z')}")
+                
+                return parsed_time, None
+            except Exception as e:
+                if DEBUG:
+                    logger.debug(f"Time parsing error: {str(e)}")
+                return None, "Could not parse time format. Please use format like '1:30', '2h', or '30m'"
+        else:
+            # Calculate future time based on hours and minutes
+            now = get_current_time()
+            future_time = now + datetime.timedelta(hours=hours, minutes=minutes)
+            
+            # Ensure the time is at least 2 minutes in the future
+            if (future_time - now).total_seconds() < 120:
+                future_time = now + datetime.timedelta(minutes=2)
+                logger.info(f"Adjusted lock time to be at least 2 minutes in the future: {future_time.strftime('%I:%M %p %Z')}")
+            
+            return future_time, None
+            
+    except Exception as e:
+        return None, f"Error parsing time: {str(e)}"
+
+async def schedule_lock_time(lock_time):
+    """
+    Schedule a task to lock the doors at the specified time.
+    Cancels any existing lock task.
+    """
+    global lock_task, next_lock_time
+    
+    # Cancel existing task if any
+    if lock_task and not lock_task.done():
+        lock_task.cancel()
+        
+    next_lock_time = lock_time
+    
+    async def lock_at_time():
+        nonlocal lock_time  # Use nonlocal to access the outer lock_time
+        global next_lock_time  # Add global declaration for next_lock_time
+        try:
+            # Calculate delay until lock time
+            now = get_current_time()
+            delay = (lock_time - now).total_seconds()
+            
+            if DEBUG:
+                logger.debug(f"Scheduling lock for {lock_time.strftime('%I:%M %p %Z')}")
+                logger.debug(f"Current time: {now.strftime('%I:%M %p %Z')}")
+                logger.debug(f"Delay in seconds: {delay}")
+            
+            if delay > 0:
+                await asyncio.sleep(delay)
+                
+                # Check if this is still the current lock time
+                if next_lock_time == lock_time:
+                    logger.info(f"Executing scheduled lock at {get_current_time().strftime('%I:%M %p %Z')}")
+                    # Log the scheduled lock execution to audit log
+                    log_to_audit("System", "auto-lock", "Executing scheduled lock")
+                    
+                    # Lock the doors
+                    if unifi:
+                        try:
+                            unifi.set_evacuation_mode(False)
+                            logger.info("Successfully locked all doors after timeout")
+                            
+                            # Log successful auto-lock to audit log
+                            log_to_audit("System", "auto-lock", "Success - All doors locked after timeout")
+                            
+                            # Update status channels
+                            if STATUS_CHANNEL_ID:
+                                for guild in bot.guilds:
+                                    await update_status_channel(guild, is_unlocked=False)
+                                    
+                        except Exception as e:
+                            logger.error(f"Failed to lock doors during scheduled lock: {str(e)}")
+                            if DEBUG:
+                                logger.debug(f"Error details: {repr(e)}")
+                            # Send error notification
+                            send_notification(
+                                "Auto-Lock Failed",
+                                f"Failed to automatically lock doors: {str(e)}",
+                                priority="high",
+                                tags=["warning", "auto-lock-error"]
+                            )
+                            
+                            # Log the failure to audit log
+                            log_to_audit("System", "auto-lock", f"Failed - Error: {str(e)}")
+                        
+                        # Clear the next lock time
+                        next_lock_time = None
+                else:
+                    logger.debug("Scheduled lock was cancelled (new lock time was set)")
+                    # Log the cancellation to audit log
+                    log_to_audit("System", "auto-lock", "Cancelled - New lock time was set")
+                        
+        except asyncio.CancelledError:
+            logger.debug("Lock task was cancelled")
+        except Exception as e:
+            logger.error(f"Error in automatic lock task: {str(e)}")
+            if DEBUG:
+                logger.debug(f"Error details: {repr(e)}")
+            # Send error notification
+            send_notification(
+                "Auto-Lock Task Error",
+                f"Error in automatic lock task: {str(e)}",
+                priority="high",
+                tags=["warning", "auto-lock-error"]
+            )
+    
+    # Create and store the new task
+    lock_task = asyncio.create_task(lock_at_time())
+    logger.info(f"Scheduled automatic lock for {lock_time.strftime('%I:%M %p %Z')}")
 
 # Run the bot
 bot.run(os.getenv('DISCORD_TOKEN')) 
