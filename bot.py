@@ -668,11 +668,36 @@ async def lock(interaction: nextcord.Interaction):
         await interaction.response.defer()
         if DEBUG:
             logger.debug("Processing lock command")
+            
+        # Clear any scheduled auto-lock task
+        global lock_task, next_lock_time
+        
+        # Track if a timer was cleared for audit logging
+        timer_was_cleared = False
+        timer_info = ""
+        
+        if next_lock_time:
+            timer_info = f" - (Auto-lock was scheduled for {next_lock_time.strftime('%I:%M %p')})"
+            timer_was_cleared = True
+            
+        if lock_task and not lock_task.done():
+            lock_task.cancel()
+            logger.info("Cancelled scheduled auto-lock timer")
+            lock_task = None
+            timer_was_cleared = True
+        
+        # Clear next lock time
+        next_lock_time = None
+            
         result = unifi.set_evacuation_mode(False)
         logger.info("Successfully locked all doors")
         
         # Log success to audit log
-        log_to_audit(username, "lock", "Success - All doors locked")
+        audit_message = "Success - All doors locked"
+        if timer_was_cleared:
+            audit_message += timer_info + " - Timer cleared"
+            
+        log_to_audit(username, "lock", audit_message)
         
         # Send response to Discord - do this before channel updates which might fail
         await interaction.followup.send("✅ All doors have been locked")
@@ -828,13 +853,13 @@ def parse_time_input(input_str):
         hours = 0
         minutes = 0
         
-        # Extract hours
-        h_match = re.search(r'(\d+)h', input_str.lower())
+        # Extract hours - allow optional space before 'h'
+        h_match = re.search(r'(\d+)\s*h', input_str.lower())
         if h_match:
             hours = int(h_match.group(1))
             
-        # Extract minutes
-        m_match = re.search(r'(\d+)m', input_str.lower())
+        # Extract minutes - allow optional space before 'm'
+        m_match = re.search(r'(\d+)\s*m', input_str.lower())
         if m_match:
             minutes = int(m_match.group(1))
             
@@ -960,6 +985,10 @@ async def schedule_lock_time(lock_time):
                     # Log the scheduled lock execution to audit log
                     log_to_audit("System", "auto-lock", "Executing scheduled lock")
                     
+                    # Store the channel ID where the unlock command was used
+                    # We'll need it to send a confirmation message later
+                    notification_channels = []
+                    
                     # Lock the doors
                     if unifi:
                         try:
@@ -968,6 +997,17 @@ async def schedule_lock_time(lock_time):
                             
                             # Log successful auto-lock to audit log
                             log_to_audit("System", "auto-lock", "Success - All doors locked after timeout")
+                            
+                            # Send a message to all allowed channels that the doors have been locked
+                            for guild in bot.guilds:
+                                for channel_id in ALLOWED_CHANNELS:
+                                    channel = guild.get_channel(channel_id)
+                                    if channel:
+                                        try:
+                                            await channel.send("🔒 Auto-lock timer completed: All doors have been locked")
+                                            logger.debug(f"Sent auto-lock notification to channel {channel.name}")
+                                        except Exception as e:
+                                            logger.error(f"Failed to send auto-lock notification to channel {channel_id}: {str(e)}")
                             
                             # Update status channels
                             if STATUS_CHANNEL_ID:
