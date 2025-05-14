@@ -578,8 +578,8 @@ async def unlock(interaction: nextcord.Interaction, lock_after: str = nextcord.S
             
         # Parse time input if provided
         lock_time = None
-        if unlock_after:
-            lock_time, error = parse_time_input(unlock_after)
+        if lock_after:
+            lock_time, error = parse_time_input(lock_after)
             if error:
                 await interaction.followup.send(f"⚠️ {error}\nProceeding with unlock without timer.")
                 logger.warning(f"Time input parse error: {error}")
