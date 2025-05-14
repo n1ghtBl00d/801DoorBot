@@ -57,7 +57,7 @@ STATUS_CHANNEL_ID = os.getenv('STATUS_CHANNEL_ID', '').strip()
 STATUS_CHANNEL_ID = int(STATUS_CHANNEL_ID) if STATUS_CHANNEL_ID.isdigit() else None
 STATUS_CHANNEL_NAME_PREFIX = os.getenv('STATUS_CHANNEL_NAME_PREFIX', 'doors').strip()
 LOCKED_EMOJI = "🔐"
-UNLOCKED_EMOJI = "🔓"
+UNLOCKED_EMOJI = "🟢"
 
 # Suppress nextcord warnings in silent mode
 if SILENT_MODE:
