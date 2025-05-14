@@ -544,7 +544,7 @@ async def on_ready():
         )
 
 @bot.slash_command(name="unlock", description="Unlock all doors (with optional auto-lock timer)")
-async def unlock(interaction: nextcord.Interaction, unlock_after: str = nextcord.SlashOption(description="Optional: Time to auto-lock (e.g. '1:30pm', '2h', '30m')", required=False)):
+async def unlock(interaction: nextcord.Interaction, lock_after: str = nextcord.SlashOption(description="Optional: Time to auto-lock (e.g. '1:30pm', '2h', '30m')", required=False)):
     try:
         # Get username for logging before any checks
         username = interaction.user.display_name
